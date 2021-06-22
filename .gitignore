@@ -206,3 +206,4 @@ adviser/tools/*.zip
 
 # models
 adviser/resources/models
+adviser/services/policy/rl/models
