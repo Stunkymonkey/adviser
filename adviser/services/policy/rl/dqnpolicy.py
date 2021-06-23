@@ -112,6 +112,7 @@ class DQNPolicy(RLPolicy, Service):
         self.loss_fun = nn.SmoothL1Loss(reduction='none')
         # self.loss_fun = nn.MSELoss(reduction='none')
 
+        self.sim_goal = None
         self.train_call_count = 0
         self.total_train_dialogs = 0
         self.epsilon = self.epsilon_start
