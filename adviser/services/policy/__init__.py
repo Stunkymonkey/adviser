@@ -19,4 +19,5 @@
 
 from .policy_handcrafted import HandcraftedPolicy
 from .rl.dqnpolicy import DQNPolicy
+from .rl.reinforce_policy import ReinforcePolicy
 from .affective_policy import EmotionPolicy
