@@ -303,3 +303,37 @@ class NaivePrioritizedBuffer(Buffer):
 
         return s_batch, a_batch, r_batch, s2_batch, t_batch, data_indices, \
                importance_weights.view(-1, 1)
+
+
+class MonteCarloBuffer(Buffer):
+    """ Experience replay buffer with one whole dialog varying size """
+
+    def __init__(self, buffer_size: int, batch_size: int, state_dim: int,
+                 discount_gamma: float = 0.99,
+                 device=torch.device('cpu')):
+        super(MonteCarloBuffer, self).__init__(buffer_size, batch_size, state_dim,
+                                               discount_gamma=discount_gamma,
+                                               device=device)
+        print("  REPLAY MEMORY: Monte-Carlo")
+        self.start_index = 0
+
+    def sample(self):
+        """ Sample from buffer.
+
+        Returns:
+            states, actions, rewards, next states, terminal state indicator {0,1}, buffer indices,
+            None
+        """
+        data_indices = range(0, self.write_pos)
+        data_indices = torch.tensor(data_indices, dtype=torch.long, device=self.device)
+
+        state_batch = self.mem_state.index_select(0, data_indices)
+        action_batch = self.mem_action.index_select(0, data_indices)
+        reward_batch = self.mem_reward.index_select(0, data_indices)
+        next_state_batch = self.mem_next_state.index_select(0, data_indices)
+        terminal_batch = self.mem_terminal.index_select(0, data_indices)
+
+        # reset write_pos so buffer gets filled from beginning again
+        self.write_pos = 0
+
+        return state_batch, action_batch, reward_batch, next_state_batch, terminal_batch, data_indices, None
