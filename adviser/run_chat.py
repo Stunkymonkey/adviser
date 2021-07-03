@@ -114,11 +114,16 @@ def load_lecturers_domain(backchannel: bool = False):
     from utils.domain.jsonlookupdomain import JSONLookupDomain
     from services.nlu.nlu import HandcraftedNLU
     from services.nlg.nlg import HandcraftedNLG
-    from services.policy import HandcraftedPolicy
+    from services.policy import HandcraftedPolicy, DQNPolicy, ReinforcePolicy
     domain = JSONLookupDomain('ImsLecturers', display_name="Lecturers")
     lect_nlu = HandcraftedNLU(domain=domain)
     lect_bst = HandcraftedBST(domain=domain)
-    lect_policy = HandcraftedPolicy(domain=domain)
+    ## select one policy
+    # lect_policy = HandcraftedPolicy(domain=domain)
+    # lect_policy = DQNPolicy(domain=domain)
+    # lect_policy.load(path=os.path.join('services', 'policy', 'rl', 'models', 'dqn'))
+    lect_policy = ReinforcePolicy(domain=domain)
+    lect_policy.load(path=os.path.join('services', 'policy', 'rl', 'models', 'reinforce'))
     lect_nlg = load_nlg(backchannel=backchannel, domain=domain)
     return domain, [lect_nlu, lect_bst, lect_policy, lect_nlg]
 
