@@ -48,7 +48,7 @@ from utils import common
 
 def train(domain_name: str, log_to_file: bool, seed: int, train_epochs: int, train_dialogs: int,
           eval_dialogs: int, max_turns: int, train_error_rate: float, test_error_rate: float,
-          lr: float, grad_clipping: float, use_tensorboard: bool):
+          lr: float, use_tensorboard: bool, baseline_update_rate: int):
     """
         Training loop for the RL policy, for information on the parameters, look at the descriptions
         of commandline arguments in the "if main" below
@@ -67,9 +67,8 @@ def train(domain_name: str, log_to_file: bool, seed: int, train_epochs: int, tra
     user = HandcraftedUserSimulator(domain, logger=logger)
     # noise = SimpleNoise(domain=domain, train_error_rate=train_error_rate,
     #                     test_error_rate=test_error_rate, logger=logger)
-    policy = ReinforcePolicy(domain=domain, lr=lr,
-                             gradient_clipping=grad_clipping, train_dialogs=train_dialogs,
-                             logger=logger, summary_writer=summary_writer)
+    policy = ReinforcePolicy(domain=domain, lr=lr, train_dialogs=train_dialogs,
+                             logger=logger, summary_writer=summary_writer, baseline_update_rate=baseline_update_rate)
     evaluator = PolicyEvaluator(domain=domain, use_tensorboard=use_tensorboard,
                                 experiment_name=domain_name, logger=logger,
                                 summary_writer=summary_writer)
@@ -135,8 +134,9 @@ if __name__ == "__main__":
                         help="simulation error rate while evaluating")
     parser.add_argument("-lr", "--learningrate", type=float, default=0.0001,
                         help="learning rate for optimization algorithm")
-    parser.add_argument("-cg", "--clipgrad", type=float, default=0.0,
-                        help="upper bound gradient is going to be clipped to")
+
+    parser.add_argument("-b", "--baseline", default=1, type=int,
+                        help="how often the baseline-model will get trained (default: 1)")
 
     args = parser.parse_args()
 
@@ -147,5 +147,5 @@ if __name__ == "__main__":
           use_tensorboard=args.logtensorboard, seed=args.randomseed, train_epochs=args.epochs,
           train_dialogs=args.traindialogs, eval_dialogs=args.evaldialogs, max_turns=args.maxturns,
           train_error_rate=args.trainerror, test_error_rate=args.evalerror, lr=args.learningrate,
-          grad_clipping=args.clipgrad
+          baseline_update_rate=args.baseline,
           )

@@ -17,7 +17,6 @@
 #
 ###############################################################################
 
-import copy
 import os
 from typing import List, Type
 import numpy as np
@@ -46,19 +45,14 @@ eps = np.finfo(np.float32).eps.item()
 class ReinforcePolicy(RLPolicy, Service):
 
     def __init__(self, domain: JSONLookupDomain,
-                 hidden_layer_sizes: List[int] = [256, 700, 700],  # vanilla architecture
-                 shared_layer_sizes: List[int] = [256],
-                 value_layer_sizes: List[int] = [300, 300],
-                 advantage_layer_sizes: List[int] = [400, 400],  # dueling architecture
+                 hidden_layer_sizes: List[int] = [256, 700, 700],
                  lr: float = 0.0001,
                  discount_gamma: float = 0.99,
-                 # target_update_rate: int = 3,
-                 target_update_rate: int = 0,
+                 baseline_update_rate: int = 1,
                  replay_buffer_size: int = 64,
                  batch_size: int = 1,
                  buffer_cls: Type[Buffer] = MonteCarloBuffer,
                  l2_regularisation: float = 0.0,
-                 gradient_clipping: float = 5.0,
                  p_dropout: float = 0.0,
                  training_frequency: int = 2,
                  train_dialogs: int = 1000,
@@ -80,24 +74,21 @@ class ReinforcePolicy(RLPolicy, Service):
         self.training_frequency = training_frequency
         self.train_dialogs = train_dialogs
         self.lr = lr
-        self.gradient_clipping = gradient_clipping
-        if gradient_clipping > 0.0 and self.logger:
-            self.logger.info("Gradient Clipping: " + str(gradient_clipping))
-        self.target_update_rate = target_update_rate
+        self.baseline_update_rate = baseline_update_rate
 
         # Create network architecture
         self.model = REINFORCE(self.state_dim, self.action_dim,
                                hidden_layer_sizes=hidden_layer_sizes, dropout_rate=p_dropout)
 
         self.optim = optim.Adam(self.model.parameters(), lr=lr, weight_decay=l2_regularisation)
-        self.loss_fun = nn.SmoothL1Loss(reduction='none')
+        self.loss_fun = nn.MSELoss()
 
         # Create network update
-        self.target_model = None
-        if target_update_rate > 1:
+        self.baseline_model = None
+        if baseline_update_rate >= 1:
             self.logger.info("Update: with baseline")
-            self.target_model = copy.deepcopy(self.model)
-            # self.target_model = ValueNetwork(self.state_dim, self.action_dim, hidden_layer_sizes=hidden_layer_sizes)
+            self.baseline_model = ValueNetwork(self.state_dim, self.action_dim, hidden_layer_sizes=hidden_layer_sizes)
+            self.baseline_optim = optim.Adam(self.model.parameters(), lr=lr, weight_decay=l2_regularisation)
         elif self.logger:
             self.logger.info("Update: without baseline")
 
@@ -110,8 +101,8 @@ class ReinforcePolicy(RLPolicy, Service):
         self.saved_log_probs = []
 
         self.model = self.model.to(device)
-        if self.target_model is not None:
-            self.target_model = self.target_model.to(device)
+        if self.baseline_model is not None:
+            self.baseline_model = self.baseline_model.to(device)
 
     def dialog_start(self, dialog_start=False):
         self.turns = 0
@@ -188,9 +179,9 @@ class ReinforcePolicy(RLPolicy, Service):
                         be needed by the NLU to disambiguate challenging utterances.
         """
         self.num_dialogs = self.cumulative_train_dialogs % self.train_dialogs
-        if self.cumulative_train_dialogs == 0 and self.target_model is not None:
-            # start with same weights for target and online net when a new epoch begins
-            self.target_model.load_state_dict(self.model.state_dict())
+        # if self.cumulative_train_dialogs == 0 and self.baseline_model is not None:
+        #     # start with same weights for target and online net when a new epoch begins
+        #     self.baseline_model.load_state_dict(self.model.state_dict())
         self.turns += 1
         if self.turns == 1 or UserActionType.Hello in beliefstate["user_acts"]:
             # first turn of dialog: say hello & don't record
@@ -247,8 +238,6 @@ class ReinforcePolicy(RLPolicy, Service):
             s_batch, a_batch, r_batch, s2_batch, t_batch, _, _ = self.buffer.sample()
             s_batch = s_batch.unsqueeze(0)
             a_batch = a_batch.unsqueeze(0)
-            s2_batch = s2_batch.unsqueeze(0)
-            t_batch = t_batch.unsqueeze(0)
 
             # get reward
             R = 0
@@ -264,6 +253,23 @@ class ReinforcePolicy(RLPolicy, Service):
             torch.autograd.set_grad_enabled(True)
             s_batch.requires_grad_()
 
+            # update baseline-model
+            if self.baseline_model is not None and self.train_call_count % self.baseline_update_rate == 0:
+                # calculate loss of value function
+                value_estimates = []
+                for state in s_batch[0]:
+                    state = state.unsqueeze(0).unsqueeze(0)
+                    value_estimates.append(self.baseline_model(state))
+
+                # rewards to go for each step of trajectory
+                value_estimates = torch.stack(value_estimates).squeeze()
+
+                v_loss = self.loss_fun(value_estimates, returns)
+                # update the weights
+                self.baseline_optim.zero_grad()
+                v_loss.backward()
+                self.baseline_optim.step()
+
             # get log_probabilities
             log_probs = []
             for s, a in zip(s_batch, a_batch):
@@ -271,15 +277,23 @@ class ReinforcePolicy(RLPolicy, Service):
 
             # calculate loss
             policy_loss = []
-            for log_prob, R in zip(log_probs, returns):
-                policy_loss.append(-log_prob * R)
+            if self.baseline_model is not None:
+                # calculate advantage
+                advantage = []
+                for value, R in zip(value_estimates, returns):
+                    advantage.append(R - value)
+
+                advantage = torch.Tensor(advantage)
+
+                # caluclate policy loss
+                for log_prob, adv in zip(log_probs, advantage):
+                    policy_loss.append(-log_prob * adv)
+            else:
+                for log_prob, R in zip(log_probs, returns):
+                    policy_loss.append(-log_prob * R)
 
             loss = torch.cat(policy_loss).sum()
             loss.backward()
-
-            # clip gradients
-            if self.gradient_clipping > 0.0:
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clipping)
 
             # update weights
             self.optim.step()
@@ -302,10 +316,6 @@ class ReinforcePolicy(RLPolicy, Service):
                             min_grad_norm = current_grad_norm
                 self.writer.add_scalar('train/min_grad', min_grad_norm, self.train_call_count)
                 self.writer.add_scalar('train/max_grad', max_grad_norm, self.train_call_count)
-
-            # update target net
-            if self.target_model is not None and self.train_call_count % self.target_update_rate == 0:
-                self.target_model.load_state_dict(self.model.state_dict())
 
     def save(self, path: str = os.path.join('models', 'reinforce'), version: str = "1.0"):
         """ Save model weights
@@ -335,21 +345,15 @@ class ReinforcePolicy(RLPolicy, Service):
             raise FileNotFoundError("Could not find REINFORCE policy weight file ", model_file)
         self.model = torch.load(model_file)
         self.logger.info("Loaded REINFORCE weights from file " + model_file)
-        if self.target_model is not None:
-            self.target_model.load_state_dict(self.model.state_dict())
 
     def train(self, train=True):
         """ Sets module and its subgraph to training mode """
         super(ReinforcePolicy, self).train()
         self.is_training = True
         self.model.train()
-        if self.target_model is not None:
-            self.target_model.train()
 
     def eval(self, eval=True):
         """ Sets module and its subgraph to eval mode """
         super(ReinforcePolicy, self).eval()
         self.is_training = False
         self.model.eval()
-        if self.target_model is not None:
-            self.target_model.eval()
